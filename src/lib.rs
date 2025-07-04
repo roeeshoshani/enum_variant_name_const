@@ -1,56 +1,59 @@
-//! Attribute macro `#[enum_variant_name_const]`
+//! `#[derive(EnumVariantNameConst)]`
 //!
-//! It injects a
-//! ```rust
+//! Adds
+//! ```ignore
 //! pub const fn variant_name(&self) -> &'static str
 //! ```
-//! on the annotated enum, returning the exact identifier of the
-//! variant (`"A"`, `"B"` …) at **compile time**.
-//!
-//! # Example
-//! ```
-//! use enum_variant_name_const::enum_variant_name_const;
-//!
-//! #[enum_variant_name_const]
-//! enum MyEnum {
-//!     A(i32),
-//!     B { x: u32, y: u32 },
-//! }
-//!
-//! const NAME: &str = {
-//!     let e = MyEnum::B { x: 1, y: 2 };
-//!     e.variant_name()
-//! };
-//!
-//! assert_eq!(NAME, "B");
-//! ```
+//! to the enum, returning the precise identifier of the variant
+//! (“A”, “B”, …) and usable in `const` contexts.
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{Fields, ItemEnum, parse_macro_input};
+use syn::{Data, DeriveInput, Fields, parse_macro_input};
 
-/// Apply on an enum to generate `const fn variant_name(&self) -> &'static str`.
+/// Derive macro that injects a
 ///
-/// ```rust
-/// use enum_variant_name_const::enum_variant_name_const;
-///
-/// #[enum_variant_name_const]
-/// enum Message<T> {
-///     Ping,
-///     Data(T),
-///     Error { code: u16, msg: String },
-/// }
+/// ```ignore
+/// pub const fn variant_name(&self) -> &'static str
 /// ```
-#[proc_macro_attribute]
-pub fn enum_variant_name_const(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Parse the input as an enum.
-    let input = parse_macro_input!(item as ItemEnum);
+///
+/// on the annotated enum.
+///
+/// # Example
+/// ```
+/// use enum_variant_name_const::EnumVariantNameConst;
+///
+/// #[derive(EnumVariantNameConst)]
+/// enum MyEnum {
+///     A(i32),
+///     B { x: u32, y: u32 },
+/// }
+///
+/// const NAME: &str = MyEnum::B { x: 1, y: 2 }.variant_name();
+/// assert_eq!(NAME, "B");
+/// ```
+#[proc_macro_derive(EnumVariantNameConst)]
+pub fn enum_variant_name_const_derive(item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as DeriveInput);
     let enum_ident = &input.ident;
     let generics = &input.generics;
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
-    // Build one match arm per variant, choosing the correct pattern kind.
-    let match_arms = input.variants.iter().map(|v| {
+    // Ensure we were applied to an enum.
+    let data_enum = match &input.data {
+        Data::Enum(data) => data,
+        _ => {
+            return syn::Error::new_spanned(
+                enum_ident,
+                "`EnumVariantNameConst` can only be derived for enums",
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
+
+    // One match arm per variant, with the correct pattern shape.
+    let match_arms = data_enum.variants.iter().map(|v| {
         let ident = &v.ident;
         let pat = match &v.fields {
             Fields::Named(_) => quote! { Self::#ident { .. } },
@@ -60,10 +63,7 @@ pub fn enum_variant_name_const(_attr: TokenStream, item: TokenStream) -> TokenSt
         quote! { #pat => stringify!(#ident), }
     });
 
-    // Compose the expanded code.
     let expanded = quote! {
-        #input
-
         impl #impl_generics #enum_ident #ty_generics #where_clause {
             /// Compile-time string with the variant’s identifier.
             #[inline(always)]
